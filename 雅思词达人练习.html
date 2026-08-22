@@ -365,7 +365,7 @@
     <div class="all-hero" id="allHero">
       <div class="all-head">
         <div class="all-title">📚 全词汇大作战 <span class="pill">3668 词全覆盖</span></div>
-        <div class="all-desc">题库收录 IELTS 词汇表全部单词，每次随机抽题 · 重复刷题直到记牢每一个</div>
+        <div class="all-desc">题库收录 IELTS 词汇表全部单词 · 自动避开最近测过的词，保证每次都是新词 · 只出选择题</div>
       </div>
       <div class="all-modes" id="allModes"></div>
       <div class="all-count">
@@ -1013,10 +1013,19 @@ function pickWordDistractors(word, n){
   return out;
 }
 function genAllQuestions(mode, count){
-  // mode: 'en2cn' 英选中义 / 'cn2en' 义选英 / 'spell' 拼写
-  const keys = shuffleArr(Object.keys(IELTS_DICT)).slice(0, count);
+  // mode: 'en2cn' 英选中义 / 'cn2en' 义选英 / 'mixed' 随机混合（都是选择题）
+  const allKeys = Object.keys(IELTS_DICT);
+  // 「已测词记忆」：优先抽本轮与近期未测过的词，保证随机新鲜感
+  const seenKey = "cidaren_ielts_seen";
+  let seenSet = new Set();
+  try{ seenSet = new Set(JSON.parse(localStorage.getItem(seenKey)||"[]")); }catch(e){}
+  const freshKeys = shuffleArr(allKeys.filter(k=>!seenSet.has(k)));
+  const poolKeys = freshKeys.length >= count ? freshKeys : shuffleArr(allKeys);
+  const keys = poolKeys.slice(0, count);
+
   const qs = [];
   for(const w of keys){
+    seenSet.add(w);
     const info = IELTS_DICT[w];
     const uk = info[0]||"", us = info[1]||"", shorts = info[2]||[], full = info[3]||"";
     const shortM = shorts[0] || full;
@@ -1025,26 +1034,33 @@ function genAllQuestions(mode, count){
     const pos = posMatch ? posMatch[0] : "";
     const base = { word:w, phon, pos, meaning:full||shortM, note:shorts.length>1?("另义："+shorts.slice(1).join("；")):("IELTS 核心词汇 · "+full), example:null };
 
-    if(mode === "en2cn"){
+    // 决定本题题型：mixed 模式下随机穿插两种选择题
+    let m = mode;
+    if(mode === "mixed") m = (Math.random() < 0.5) ? "en2cn" : "cn2en";
+
+    if(m === "en2cn"){
       const distractors = pickDistractors(w, shortM, 3);
       if(distractors.length < 3) continue; // 干扰不足则跳过
       const options = shuffleArr([shortM, ...distractors]);
       qs.push({ prompt:w, options, answer:options.indexOf(shortM), ex:base });
-    } else if(mode === "cn2en"){
+    } else if(m === "cn2en"){
       const distractors = pickWordDistractors(w, 3);
       const options = shuffleArr([w, ...distractors]);
       qs.push({ prompt:shortM, options, answer:options.indexOf(w), ex:base });
-    } else if(mode === "spell"){
-      qs.push({ prompt:shortM, hint:"单词以 " + w[0].toUpperCase() + " 开头，共 " + w.length + " 个字母", answer:w, ex:base });
     }
   }
+  // 保存已测词（只保留最近 1000 个，防止无限膨胀）
+  try{
+    const arr = Array.from(seenSet);
+    localStorage.setItem(seenKey, JSON.stringify(arr.slice(-1000)));
+  }catch(e){}
   return qs;
 }
 function startAllQuiz(mode){
   const meta = {
     en2cn:{ title:"英选中义 · 全词汇", desc:"看英文单词选正确中文释义", type:"choice" },
     cn2en:{ title:"义选英 · 全词汇", desc:"看中文释义选正确英文单词", type:"choice" },
-    spell:{ title:"拼写 · 全词汇", desc:"根据释义拼写单词", type:"spell" }
+    mixed:{ title:"随机混合 · 全词汇", desc:"两种选择题随机穿插", type:"choice" }
   }[mode];
   const qs = genAllQuestions(mode, allCount);
   if(qs.length === 0){ alert("出题失败，请重试"); return; }
@@ -1140,9 +1156,9 @@ function filterProg(f, el){
 }
 function initAllModes(){
   const modes = [
+    { mode:"mixed", icon:"🎲", t:"随机混合", d:"两种题型随机穿插" },
     { mode:"en2cn", icon:"🇬🇧→🇨🇳", t:"英选中义", d:"看单词选释义" },
     { mode:"cn2en", icon:"🇨🇳→🇬🇧", t:"义选英", d:"看释义选单词" },
-    { mode:"spell", icon:"⌨️", t:"拼写单词", d:"看释义拼单词" },
   ];
   document.getElementById("allModes").innerHTML = modes.map(m=>`
     <button class="mode-btn" onclick="startAllQuiz('${m.mode}')">
@@ -1254,9 +1270,10 @@ function renderHome(){
     <div class="stat-card"><div class="num">${totalDone}</div><div class="lbl">累计答题</div></div>
     <div class="stat-card"><div class="num">${wrong.length}</div><div class="lbl">错词本</div></div>`;
 
-  // 题型卡片
+  // 题型卡片（只保留选择题；排序/拼写题型已按用户偏好隐藏）
   const grid = document.getElementById("typeGrid");
-  grid.innerHTML = SECTIONS.map(s=>`
+  const choiceSections = SECTIONS.filter(s=>s.type==="choice");
+  grid.innerHTML = choiceSections.map(s=>`
     <div class="type-card" onclick="startSection(${s.id})">
       <span class="t-no">SECTION ${s.id}</span>
       <div class="t-icon">${s.icon}</div>
@@ -1264,7 +1281,7 @@ function renderHome(){
       <p>${s.desc}</p>
       <div class="t-meta">
         <span class="pill">${s.questions.length} 题</span>
-        <span class="pill" style="background:${s.color}18;color:${s.color}">${s.type==="choice"?"选择题":s.type==="spell"?"拼写题":"排序题"}</span>
+        <span class="pill" style="background:${s.color}18;color:${s.color}">选择题</span>
       </div>
     </div>`).join("");
 }
